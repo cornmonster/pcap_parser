@@ -8,7 +8,8 @@
 #include <pcap.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
-#include <string>
+#include <arpa/inet.h>
+#include <netinet/ether.h>
 
 /*
 check	- Packet type (TCP, UDP, other)
@@ -21,16 +22,21 @@ check	- Payload size
 
 using namespace std;
 
-int counter = 0;
-// bool checkTcpCheckSum(const unsigned char *packet, ) {
-	
-// }
+int counter = 1;
+
+struct tcp_pseudo {
+	struct in_addr source;
+	struct in_addr dest;
+	u_char reserved;
+	u_char protocol;
+	u_short tcp_size;
+}
+
+bool isValid_checksum() {
+
+}
 
 void parser(const unsigned char *packet, unsigned int capture_len) {
-	string packetType;
-	string sourceMAC;
-	string destMAC;
-
 	if (capture_len < sizeof(struct ether_header)) {
 		fprintf(stderr, "Not a valid ethernet header.\n");
 		return;
@@ -39,12 +45,10 @@ void parser(const unsigned char *packet, unsigned int capture_len) {
 	printf("Packet number: %d\n", counter);
 
 	/* Get the source and destination MAC addresses */
-	ether_header* eh = (struct ether_header*) packet;
-	sourceMAC = string(reinterpret_cast<char*>((unsigned char*)packet->h_source));
-	destMAC = string(reinterpret_cast<char*>((unsigned char*)packet->h_dest));
-	printf("\tSource MAC address: %s\n", sourceMAC.c_str());
-	printf("\tDestin MAC address: %s\n", destMAC.c_str());
-	unsigned int etherType = packet->h_proto;
+	struct ether_header* eh = (struct ether_header*) packet;
+	printf("\tSource MAC address: %s\n", ether_ntoa((const ether_addr*)eh->ether_shost));
+	printf("\tDestin MAC address: %s\n", ether_ntoa((const ether_addr*)eh->ether_dhost));
+	unsigned int etherType = eh->ether_type;
 
 	/* Skip the ethernet header */
 	packet += sizeof(struct ether_header);
@@ -53,35 +57,40 @@ void parser(const unsigned char *packet, unsigned int capture_len) {
 	if (etherType == 8) { 
 		/* This is an IPV4 packet */
 		struct ip* iph = (struct ip*) packet;
-		string sourceIP(inet_ntoa((in_addr)(iph->ip_src)));
-		string destIP(inet_ntoa((in_addr)(iph->ip_dst)));
-		printf("\tSource IP Address: %s\n", sourceIP.c_str());
-		printf("\tDestin IP Address: %s\n", destIP.c_str());
+		in_addr* source_id = &(iph->ip_src);
+		in_addr* dest_id = &(iph->ip_dst);
+		printf("\tSource IP Address: %s\n", inet_ntoa((in_addr)(iph->ip_src)));
+		printf("\tDestin IP Address: %s\n", inet_ntoa((in_addr)(iph->ip_dst)));
 
-		int ip_header_length = iph->ip_hl * 4;
-		int ip_total_length = iph->ip_len;
+		int ip_header_length = iph->ip_hl;
+		int ip_total_length = ntohs(iph->ip_len);
+		// printf("\tIP total length: %d\n", ntohs(iph->ip_len));
+		// printf("\tIP total length: %d\n", iph->ip_hl);
 		int proto = (int)iph->ip_p;
 		/* Skip the ip header */
-		packet += ip_header_length;
-		capture_len -= ip_header_length;
+		packet += ip_header_length*4;
+		capture_len -= ip_header_length*4;
 
 		if(proto == 6) {
 			/* This is a TCP packet */
 			printf("\tPacket type: TCP\n");
 			struct tcphdr* tcph = (struct tcphdr*) packet;
-			printf("\tPayload size: %d\n", ip_total_length - ip_header_length - ntohs(tcph->th_off)*4);
-			printf("\tSource Port: %s\n", ntohs(tcph->th_sport));
-			printf("\tDestin Port: %s\n", ntohs(tcph->th_dport));
-			// printf("\t");
+			printf("\tPayload size: %d\n", ip_total_length - ip_header_length*4 - tcph->doff*4);
+			printf("\tSource Port: %d\n", ntohs(tcph->source));
+			printf("\tDestin Port: %d\n", ntohs(tcph->dest));
+			printf("\tChecksum: 0x%x\n", ntohs(tcph->check));
+			if(isValid_checksum())
+			printf("\tChecksum status: \n");
+
 		}
 		else if(proto == 11) {
 			/* This is a UDP packet */
 			printf("\tPacket type: UDP\n");
 			struct udphdr* udph = (struct udphdr*) packet;
-			printf("\tPayload size: %d\n", ntohs(udph->uh_ulen)-8);
-			printf("\tSource Port: %s\n", ntohs(udph->uh_sport));
-			printf("\tDestin Port: %s\n", ntohs(udph->uh_dport));
-		}
+			printf("\tPayload size: %d\n", ntohs(udph->len)-8);
+			printf("\tSource Port: %d\n", ntohs(udph->source));
+			printf("\tDestin Port: %d\n", ntohs(udph->dest));
+			}
 		else {
 			/* Other protocol */
 			printf("\tPacket type: Other\n");
@@ -116,8 +125,10 @@ int main(int argc, char *argv[]) {
 	/* Now just loop through extracting packets as long as we have
 	 * some to read.
 	 */
-	while ((packet = pcap_next(pcap, &header)) != NULL)
+	while ((packet = pcap_next(pcap, &header)) != NULL){
 		parser(packet, header.caplen);
+		counter++;
+	}
 
 	// terminate
 	return 0;
