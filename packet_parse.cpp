@@ -30,10 +30,59 @@ struct tcp_pseudo {
 	u_char reserved;
 	u_char protocol;
 	u_short tcp_size;
+};
+
+uint16_t checksum(unsigned short *addr, unsigned int count, uint16_t check) {
+    /* Compute Internet Checksum for "count" bytes
+     *         beginning at location "addr".
+     */
+    register long sum = 0;
+
+    while(count > 1) {
+    /*  This is the inner loop */
+        sum += * addr++;
+        count -= 2;
+    }
+
+    /*  Add left-over byte, if any */
+    if(count > 0)
+        sum += * (unsigned char *) addr;
+
+    /*  Fold 32-bit sum to 16 bits */
+    while(sum>>16)
+        sum = (sum & 0xffff) + (sum >> 16);
+
+    return (uint16_t)~sum;
 }
 
-bool isValid_checksum() {
+bool isValid_checksum(struct tcphdr* tcph, struct ip* iph) {
+	int ip_total_length = ntohs(iph->ip_len);
+	int tcpopt_len = (tcph->doff)*4 - 20;
+	int tcpdata_len = ip_total_length - (iph->ip_hl)*4 - (tcph->doff)*4;
 
+	struct tcp_pseudo tcpph;
+	tcpph.source = (in_addr)(iph->ip_src);
+	tcpph.dest = (in_addr)(iph->ip_dst);
+	tcpph.reserved = 0;
+	tcpph.protocol = htons(IPPROTO_TCP);
+	tcpph.tcp_size = htons(sizeof(struct tcphdr) + tcpopt_len + tcpdata_len);
+
+	int total_tcp_len = sizeof(struct tcp_pseudo) + sizeof(struct tcphdr) + tcpopt_len + tcpdata_len;
+	unsigned short* tcp_copy = (unsigned short*)malloc(total_tcp_len*sizeof(unsigned short));
+
+    memcpy((unsigned char *)tcp_copy, &tcpph, sizeof(struct tcp_pseudo));
+    memcpy((unsigned char *)tcp_copy+sizeof(struct tcp_pseudo), (struct tcphdr*)tcph, sizeof(struct tcphdr));
+    memcpy((unsigned char *)tcp_copy+sizeof(struct tcp_pseudo)+sizeof(struct tcphdr), (struct ip*)iph + (iph->ip_hl)*4 + (sizeof(struct tcphdr)), tcpopt_len);
+    memcpy((unsigned char *)tcp_copy+sizeof(struct tcp_pseudo)+sizeof(struct tcphdr)+tcpopt_len, (struct tcphdr*)tcph + (tcph->doff*4), tcpdata_len);
+
+    uint16_t result = checksum(tcp_copy, total_tcp_len, tcph->check);
+    printf("\tCalculated checksum: 0x%x\n", result);
+    if(ntohs(result) == ntohs(tcph->check)) {
+    	return true;
+    }
+    else {
+    	return false;
+    }
 }
 
 void parser(const unsigned char *packet, unsigned int capture_len) {
@@ -57,8 +106,6 @@ void parser(const unsigned char *packet, unsigned int capture_len) {
 	if (etherType == 8) { 
 		/* This is an IPV4 packet */
 		struct ip* iph = (struct ip*) packet;
-		in_addr* source_id = &(iph->ip_src);
-		in_addr* dest_id = &(iph->ip_dst);
 		printf("\tSource IP Address: %s\n", inet_ntoa((in_addr)(iph->ip_src)));
 		printf("\tDestin IP Address: %s\n", inet_ntoa((in_addr)(iph->ip_dst)));
 
@@ -79,9 +126,10 @@ void parser(const unsigned char *packet, unsigned int capture_len) {
 			printf("\tSource Port: %d\n", ntohs(tcph->source));
 			printf("\tDestin Port: %d\n", ntohs(tcph->dest));
 			printf("\tChecksum: 0x%x\n", ntohs(tcph->check));
-			if(isValid_checksum())
-			printf("\tChecksum status: \n");
-
+			if(isValid_checksum(tcph, iph)) 
+				printf("\tChecksum status: Valid\n");
+			else 
+				printf("\tChecksum status: Invalid\n");
 		}
 		else if(proto == 11) {
 			/* This is a UDP packet */
